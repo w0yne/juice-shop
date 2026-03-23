@@ -216,14 +216,34 @@ jobs:
             const findings = report.findings || [];
             if (findings.length === 0) return;
 
-            // Get PR info
+            // Get PR files with their diff patches to know valid line ranges
             const { data: prFiles } = await github.rest.pulls.listFiles({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: context.issue.number,
               per_page: 300
             });
-            const changedFiles = new Set(prFiles.map(f => f.filename));
+
+            // Build a map of file -> set of valid diff line numbers
+            const fileDiffLines = {};
+            const changedFiles = new Set();
+            for (const pf of prFiles) {
+              changedFiles.add(pf.filename);
+              if (!pf.patch) continue;
+              const lines = new Set();
+              let lineNum = 0;
+              for (const line of pf.patch.split('\n')) {
+                const hunkMatch = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+                if (hunkMatch) {
+                  lineNum = parseInt(hunkMatch[1]) - 1;
+                  continue;
+                }
+                if (line.startsWith('-')) continue; // deleted line, no number in new file
+                lineNum++;
+                lines.add(lineNum);
+              }
+              fileDiffLines[pf.filename] = lines;
+            }
 
             const { data: pr } = await github.rest.pulls.get({
               owner: context.repo.owner,
@@ -233,9 +253,10 @@ jobs:
 
             const sevLabel = { CRITICAL: '🔴 严重', HIGH: '🟠 高危', MEDIUM: '🟡 中危', LOW: '🟢 低危' };
             const comments = [];
+            const fileOnlyComments = [];
 
             for (const f of findings) {
-              if (!changedFiles.has(f.file) || !f.line_start) continue;
+              if (!changedFiles.has(f.file)) continue;
 
               const body = [
                 `### ${sevLabel[f.severity] || f.severity} | ${f.cwe_id}`,
@@ -256,28 +277,60 @@ jobs:
                 `> 分类: ${f.category} | OWASP: ${f.owasp_category} | 置信度: ${f.confidence}`
               ].join('\n');
 
-              const comment = { path: f.file, body };
-              if (f.line_end && f.line_end > f.line_start) {
-                comment.start_line = f.line_start;
-                comment.line = f.line_end;
-              } else {
-                comment.line = f.line_start;
+              const validLines = fileDiffLines[f.file];
+
+              // Check if the finding's line is in the diff
+              if (validLines && f.line_start) {
+                // Try to find a valid line in the range
+                let targetLine = null;
+                for (let l = f.line_start; l <= (f.line_end || f.line_start); l++) {
+                  if (validLines.has(l)) {
+                    targetLine = l;
+                    break;
+                  }
+                }
+
+                if (targetLine) {
+                  const comment = { path: f.file, body, line: targetLine, side: 'RIGHT' };
+                  // Add start_line for range if both ends are in diff
+                  if (f.line_start !== targetLine && validLines.has(f.line_start)) {
+                    comment.start_line = f.line_start;
+                    comment.start_side = 'RIGHT';
+                  }
+                  comments.push(comment);
+                  continue;
+                }
               }
-              comments.push(comment);
+
+              // Fallback: file-level comment (no line number needed)
+              fileOnlyComments.push({
+                path: f.file,
+                body: `📍 第 ${f.line_start}-${f.line_end} 行\n\n${body}`,
+                subject_type: 'file'
+              });
             }
 
-            if (comments.length === 0) return;
+            const allComments = [...comments, ...fileOnlyComments];
+            if (allComments.length === 0) return;
 
             const bySev = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
             findings.forEach(f => { bySev[f.severity] = (bySev[f.severity] || 0) + 1; });
 
             let summaryBody = `## 🔍 Claude Code Diff 扫描 — 变更代码安全审查\n\n`;
-            summaryBody += `针对本次 PR 变更的代码进行了安全扫描，共发现 **${findings.length}** 个问题。\n`;
-            summaryBody += `详细说明已标注在对应代码行上。\n\n`;
-            summaryBody += `---\n_由 Claude Code 安全审计自动生成_`;
+            summaryBody += `| 严重程度 | 数量 |\n|----------|------|\n`;
+            for (const s of ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']) {
+              if (bySev[s] > 0) summaryBody += `| ${sevLabel[s]} | ${bySev[s]} |\n`;
+            }
+            summaryBody += `| **合计** | **${findings.length}** |\n\n`;
+            summaryBody += `📌 共 ${comments.length} 个发现已标注在代码行上`;
+            if (fileOnlyComments.length > 0) {
+              summaryBody += `，${fileOnlyComments.length} 个标注在文件级别`;
+            }
+            summaryBody += `\n\n---\n_由 Claude Code 安全审计自动生成_`;
 
             const event = bySev.CRITICAL > 0 ? 'REQUEST_CHANGES' : 'COMMENT';
 
+            // Try submitting review with all comments
             try {
               await github.rest.pulls.createReview({
                 owner: context.repo.owner,
@@ -286,15 +339,42 @@ jobs:
                 commit_id: pr.head.sha,
                 body: summaryBody,
                 event,
-                comments: comments.slice(0, 50)
+                comments: allComments.slice(0, 50)
               });
-              console.log(`Inline review: ${comments.length} comments`);
+              console.log(`Review OK: ${comments.length} inline + ${fileOnlyComments.length} file-level`);
+              return;
             } catch (err) {
-              console.log(`Inline review failed: ${err.message}`);
-              // Fallback
-              await github.rest.issues.createComment({
-                issue_number: context.issue.number,
-                owner: context.repo.owner, repo: context.repo.repo,
-                body: summaryBody
-              });
+              console.log(`Batch review failed: ${err.message}`);
             }
+
+            // Fallback: try file-level only
+            try {
+              const fileLevelAll = findings
+                .filter(f => changedFiles.has(f.file))
+                .map(f => ({
+                  path: f.file,
+                  body: `📍 第 ${f.line_start}-${f.line_end} 行\n\n### ${sevLabel[f.severity] || f.severity} | ${f.cwe_id}\n\n**${f.title}**\n\n${f.description}\n\n**修复建议：** ${f.remediation}`,
+                  subject_type: 'file'
+                }));
+
+              await github.rest.pulls.createReview({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+                commit_id: pr.head.sha,
+                body: summaryBody,
+                event: 'COMMENT',
+                comments: fileLevelAll.slice(0, 50)
+              });
+              console.log(`File-level review OK: ${fileLevelAll.length} comments`);
+              return;
+            } catch (err2) {
+              console.log(`File-level review failed: ${err2.message}`);
+            }
+
+            // Final fallback: regular comment
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner, repo: context.repo.repo,
+              body: summaryBody
+            });
