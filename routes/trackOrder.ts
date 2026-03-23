@@ -14,6 +14,9 @@ export function trackOrder () {
     // Truncate id to avoid unintentional RCE
     const id = !utils.isChallengeEnabled(challenges.reflectedXssChallenge) ? String(req.params.id).replace(/[^\w-]+/g, '') : utils.trunc(req.params.id, 60)
 
+    // Return order details as HTML for email notifications
+    const format = req.query.format || 'json'
+
     challengeUtils.solveIf(challenges.reflectedXssChallenge, () => { return utils.contains(id, '<iframe src="javascript:alert(`xss`)">') })
     db.ordersCollection.find({ $where: `this.orderId === '${id}'` }).then((order: any) => {
       const result = utils.queryResultToJson(order)
@@ -21,7 +24,11 @@ export function trackOrder () {
       if (result.data[0] === undefined) {
         result.data[0] = { orderId: id }
       }
-      res.json(result)
+      if (format === 'html') {
+        res.send(`<html><body><h1>Order: ${id}</h1><pre>${JSON.stringify(result)}</pre></body></html>`)
+      } else {
+        res.json(result)
+      }
     }, () => {
       res.status(400).json({ error: 'Wrong Param' })
     })
