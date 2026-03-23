@@ -50,70 +50,83 @@ jobs:
 
             ## 任务
 
-            1. 仔细阅读本次 PR 的所有代码变更（diff）
-            2. 针对变更的代码，逐文件分析安全漏洞
-            3. 对每个发现的漏洞，直接在对应的代码行上添加 review comment
+            1. 运行 `git diff origin/master...HEAD -- routes/ lib/ models/ server.ts` 查看变更的代码
+            2. 逐文件分析安全漏洞
+            3. 使用 `gh` CLI 在 PR 上发表 review comment
+
+            ## 发表评论的方式
+
+            分析完所有漏洞后，使用以下命令发表 PR review：
+
+            ```bash
+            gh api repos/{owner}/{repo}/pulls/{pr_number}/reviews \
+              --method POST \
+              -f body="总结评论内容" \
+              -f event="COMMENT" \
+              -f 'comments[][path]=文件路径' \
+              -f 'comments[][position]=diff中的行位置' \
+              -f 'comments[][body]=评论内容'
+            ```
+
+            或者更简单地，用 `gh pr comment` 发总结评论，用 `gh pr review` 发 inline 评论：
+
+            ```bash
+            # 发总结评论
+            gh pr comment $PR_NUMBER --body "评论内容"
+
+            # 发 review（带 inline comments）
+            gh pr review $PR_NUMBER --comment --body "总结"
+            ```
+
+            环境变量 `$PR_NUMBER`、`$REPO_OWNER`、`$REPO_NAME` 已经设置好了。
 
             ## 漏洞检查清单
 
             ### 严重 (Critical)
             - **SQL 注入**：原始查询、查询中的字符串拼接、未过滤的 req.query/req.params 用于 SQL
-            - **远程代码执行 (RCE)**：用户输入进入 eval()、new Function()、child_process.exec()、vm.runInContext()、不安全的反序列化
+            - **远程代码执行 (RCE)**：用户输入进入 eval()、new Function()、child_process.exec()、vm.runInContext()
             - **认证绕过**：缺失认证中间件、JWT 弱点、硬编码密钥
-            - **XML 外部实体 (XXE)**：不安全的 XML 解析（noent: true）
 
             ### 高危 (High)
-            - **跨站脚本 (XSS)**：反射型/存储型/DOM XSS、用户输入未转义直接嵌入 HTML
-            - **路径遍历**：用户输入在文件路径中、../未过滤
-            - **命令注入**：用户输入流入 shell 命令（child_process.exec 拼接用户输入）
-            - **不安全的直接对象引用 (IDOR)**：缺失资源所有权检查
-            - **服务端请求伪造 (SSRF)**：用户控制的 URL 用于服务端请求
+            - **跨站脚本 (XSS)**：用户输入未转义直接嵌入 HTML
+            - **命令注入**：用户输入流入 shell 命令
             - **NoSQL 注入**：$where 子句中拼接用户输入
+            - **SSRF / IDOR / 路径遍历**
 
             ### 中危 (Medium)
-            - **敏感数据泄露**：密码明文写入日志、硬编码凭据/密钥
-            - **不安全配置**：宽松的 CORS、缺失安全头
-            - **访问控制失效**：缺失角色检查
+            - **敏感数据泄露**：密码明文写入日志、硬编码凭据
             - **弱加密**：MD5/SHA1 存储密码
 
             ### 低危 (Low)
-            - **信息泄露**：堆栈跟踪、版本信息暴露
-            - **缺失速率限制**：认证端点无暴力破解保护
+            - **信息泄露**、**缺失速率限制**
 
-            ## Review Comment 格式
+            ## 每个漏洞的评论格式
 
-            对每个漏洞，在对应代码行上的 review comment 必须包含以下内容：
+            ### [🔴严重/🟠高危/🟡中危/🟢低危] [CWE-编号] 漏洞标题
 
-            ### [严重程度] [CWE-编号] 漏洞标题
+            **文件：** `文件路径` 第 X 行
 
             **漏洞代码：**
             ```
-            （引用有问题的代码片段）
+            有问题的代码
             ```
 
-            **描述：** 详细说明漏洞是什么、形成原因、影响范围。至少3-5句话。
+            **描述：** 详细说明漏洞形成原因和影响范围（3-5句话）
 
-            **攻击方式：** 攻击者具体如何利用此漏洞，包含示例 payload 或 HTTP 请求。
+            **攻击方式：** 包含示例 payload
 
-            **修复建议：** 具体的代码修改方案，包含修复后的代码示例：
+            **修复建议：**
             ```typescript
             // 修复后的代码
             ```
 
-            > OWASP: [分类] | 置信度: [HIGH/MEDIUM/LOW]
+            > OWASP: 分类 | 置信度: HIGH/MEDIUM/LOW
 
-            ## 总结评论
+            ## 最终步骤
 
-            在所有 inline comment 之后，发一条总结评论，包含：
-            - 按严重程度分类的漏洞统计表格
-            - 每个漏洞的一行摘要（文件:行号 — 标题）
-            - 整体安全评估和优先修复建议
-
-            ## 规则
-            - 所有输出使用中文
-            - 只报告有把握的问题，避免误报
-            - 必须阅读实际代码后再报告，不要猜测
-            - 每个发现必须包含具体的修复代码示例
+            分析完所有文件后，必须执行以下操作：
+            1. 用 `gh pr comment $PR_NUMBER --body "..."` 发一条包含所有漏洞详情的总结评论
+            2. 所有输出使用中文
           claude_args: '--model global.anthropic.claude-opus-4-6-v1 --max-turns 20'
 
   # Job 2: Respond to @claude mentions in comments
