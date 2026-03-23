@@ -45,60 +45,66 @@ jobs:
           github_token: ${{ steps.app-token.outputs.token }}
           use_bedrock: "true"
           show_full_output: "true"
-          settings: |
-            {
-              "permissions": {
-                "allow": [
-                  "Bash(git diff*)",
-                  "Bash(git log*)",
-                  "Bash(git show*)",
-                  "Bash(cat *)",
-                  "Bash(head *)",
-                  "Bash(grep *)",
-                  "Bash(find *)",
-                  "Bash(wc *)",
-                  "Bash(ls *)",
-                  "Bash(echo *)",
-                  "Read",
-                  "Grep",
-                  "Glob",
-                  "mcp__github_comment__create_comment",
-                  "mcp__github_comment__update_comment",
-                  "mcp__github_inline_comment__create_inline_comment",
-                  "mcp__github_inline_comment__create_inline_comments",
-                  "mcp__github_inline_comment__get_pr_diff"
-                ]
-              }
-            }
           prompt: |
-            你是一名资深应用安全工程师。你的任务是审计这个 PR 的代码变更并将结果发布到 PR 上。
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            你是一名资深应用安全工程师，正在对这个 Pull Request 中变更的代码进行安全审计。
+            PR 分支已经 checkout 到当前目录。
 
             ## 步骤
 
-            ### 第一步：获取代码变更
-            运行 `git diff origin/master...HEAD -- routes/ lib/ models/ server.ts` 查看变更的代码。
+            1. 运行 `gh pr diff ${{ github.event.pull_request.number }}` 查看变更的代码
+            2. 逐文件分析安全漏洞
+            3. 使用 `mcp__github_inline_comment__create_inline_comment`（设置 `confirmed: true`）在代码对应行上发布 inline review comment
+            4. 使用 `gh pr comment` 发布总结评论
 
-            ### 第二步：分析漏洞
-            检查以下类型：SQL 注入、远程代码执行（eval/new Function/child_process.exec）、XSS、命令注入、敏感数据泄露（密码明文日志）、NoSQL 注入、路径遍历、SSRF、IDOR。
+            只通过 GitHub 评论发布结果——不要仅输出文本。
 
-            ### 第三步：使用 create_inline_comments 工具发布 inline review
-            对每个漏洞，使用 `create_inline_comments` 工具在代码对应行上发布 review comment。先用 `get_pr_diff` 获取 diff 来确定正确的行号。
+            ## 漏洞检查清单
 
-            ### 第四步：使用 create_comment 工具发布总结
-            发一条总结评论，包含漏洞统计表格和整体安全评估。
+            ### 严重 (Critical)
+            - SQL 注入：字符串拼接查询
+            - 远程代码执行：eval()、new Function()、child_process.exec()、vm.runInContext()
+            - 认证绕过：缺失认证中间件、JWT 弱点、硬编码密钥
+            - XXE：不安全的 XML 解析
 
-            ## 每个漏洞的评论格式
-            ### 🔴严重/🟠高危/🟡中危/🟢低危 | CWE-XXX | 标题
-            - **描述：** 3-5句详细分析
-            - **攻击方式：** 示例 payload
-            - **修复建议：** 修复后的代码
+            ### 高危 (High)
+            - XSS：用户输入未转义嵌入 HTML
+            - 命令注入：用户输入流入 shell 命令
+            - NoSQL 注入：$where 中拼接用户输入
+            - SSRF / IDOR / 路径遍历
+
+            ### 中危 (Medium)
+            - 敏感数据泄露：密码明文日志、硬编码凭据
+            - 弱加密：MD5/SHA1 存储密码
+
+            ### 低危 (Low)
+            - 信息泄露、缺失速率限制
+
+            ## Inline Comment 格式
+
+            每个漏洞的 inline comment 包含：
+            - 严重程度 emoji（🔴严重/🟠高危/🟡中危/🟢低危）+ CWE 编号 + 标题
+            - 描述（3-5句详细分析）
+            - 攻击方式（含示例 payload）
+            - 修复建议（含修复代码示例）
+
+            ## 总结评论
+
+            用 `gh pr comment` 发一条总结，包含：
+            - 漏洞统计表格（按严重程度分类）
+            - 每个漏洞的一行摘要
+            - 整体安全评估
 
             ## 规则
             - 所有输出使用中文
             - 只报告有把握的问题
             - 每个发现必须包含修复代码
-            - **必须使用工具发布评论，不要只输出文本**
-          claude_args: '--model global.anthropic.claude-opus-4-6-v1 --max-turns 20 --permission-mode bypassPermissions --allowedTools "mcp__github_comment__create_comment,mcp__github_comment__update_comment,mcp__github_inline_comment__create_inline_comments,mcp__github_inline_comment__create_inline_comment,mcp__github_inline_comment__get_pr_diff"'
+          claude_args: |
+            --model global.anthropic.claude-opus-4-6-v1
+            --max-turns 20
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(git diff:*),Bash(git log:*),Bash(cat:*),Bash(head:*),Bash(grep:*),Bash(find:*),Bash(wc:*)"
 
   # Job 2: Respond to @claude mentions in comments
   claude-respond:
