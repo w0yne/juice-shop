@@ -44,6 +44,7 @@ jobs:
         with:
           github_token: ${{ steps.app-token.outputs.token }}
           use_bedrock: "true"
+          show_full_output: "true"
           prompt: |
             你是一名资深应用安全工程师，正在对这个 Pull Request 中变更的代码进行安全审计。
 
