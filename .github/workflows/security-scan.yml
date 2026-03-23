@@ -46,87 +46,62 @@ jobs:
           use_bedrock: "true"
           show_full_output: "true"
           prompt: |
-            你是一名资深应用安全工程师，正在对这个 Pull Request 中变更的代码进行安全审计。
+            你是一名资深应用安全工程师。你的任务是审计这个 PR 的代码变更并将结果发布到 PR 上。
 
-            ## 任务
+            ## 重要：你必须使用 gh CLI 发布评论
 
-            1. 运行 `git diff origin/master...HEAD -- routes/ lib/ models/ server.ts` 查看变更的代码
-            2. 逐文件分析安全漏洞
-            3. 使用 `gh` CLI 在 PR 上发表 review comment
+            你的分析结果必须通过执行 `gh pr comment` 命令发布到 PR 上。
+            仅仅输出文本是不够的——没有人会看到你的文本输出。
+            你必须运行 bash 命令来发布评论。
 
-            ## 发表评论的方式
+            ## 步骤
 
-            分析完所有漏洞后，使用以下命令发表 PR review：
+            ### 第一步：获取代码变更
+            ```bash
+            git diff origin/master...HEAD -- routes/ lib/ models/ server.ts
+            ```
+
+            ### 第二步：分析每个变更文件的安全漏洞
+
+            检查以下类型的漏洞：
+            - SQL 注入、NoSQL 注入
+            - 远程代码执行（eval、new Function、child_process.exec）
+            - 跨站脚本 XSS
+            - 命令注入
+            - 敏感数据泄露（密码明文日志）
+            - 路径遍历、SSRF、IDOR
+
+            ### 第三步：使用 gh CLI 发布评论（必须执行！）
+
+            将你的分析结果写入文件，然后用 gh 发布：
 
             ```bash
-            gh api repos/{owner}/{repo}/pulls/{pr_number}/reviews \
-              --method POST \
-              -f body="总结评论内容" \
-              -f event="COMMENT" \
-              -f 'comments[][path]=文件路径' \
-              -f 'comments[][position]=diff中的行位置' \
-              -f 'comments[][body]=评论内容'
+            cat > /tmp/security-review.md << 'REVIEW_EOF'
+            ## 🔒 Claude Code 安全审计报告
+
+            （这里写你的完整分析报告，包含每个漏洞的详细描述、攻击方式、修复建议）
+
+            REVIEW_EOF
+
+            gh pr comment $PR_NUMBER --body-file /tmp/security-review.md
             ```
 
-            或者更简单地，用 `gh pr comment` 发总结评论，用 `gh pr review` 发 inline 评论：
+            **你必须执行 `gh pr comment` 命令！这是最关键的一步。如果你不执行这个命令，你的分析将不会被任何人看到。**
 
-            ```bash
-            # 发总结评论
-            gh pr comment $PR_NUMBER --body "评论内容"
+            ### 漏洞报告格式（每个漏洞）
 
-            # 发 review（带 inline comments）
-            gh pr review $PR_NUMBER --comment --body "总结"
-            ```
+            #### 🔴 严重 | CWE-XXX | 漏洞标题
+            - **文件：** `路径` 第 X 行
+            - **漏洞代码：** （代码片段）
+            - **描述：** （3-5句详细分析）
+            - **攻击方式：** （示例 payload）
+            - **修复建议：** （修复后的代码）
 
-            环境变量 `$PR_NUMBER`、`$REPO_OWNER`、`$REPO_NAME` 已经设置好了。
-
-            ## 漏洞检查清单
-
-            ### 严重 (Critical)
-            - **SQL 注入**：原始查询、查询中的字符串拼接、未过滤的 req.query/req.params 用于 SQL
-            - **远程代码执行 (RCE)**：用户输入进入 eval()、new Function()、child_process.exec()、vm.runInContext()
-            - **认证绕过**：缺失认证中间件、JWT 弱点、硬编码密钥
-
-            ### 高危 (High)
-            - **跨站脚本 (XSS)**：用户输入未转义直接嵌入 HTML
-            - **命令注入**：用户输入流入 shell 命令
-            - **NoSQL 注入**：$where 子句中拼接用户输入
-            - **SSRF / IDOR / 路径遍历**
-
-            ### 中危 (Medium)
-            - **敏感数据泄露**：密码明文写入日志、硬编码凭据
-            - **弱加密**：MD5/SHA1 存储密码
-
-            ### 低危 (Low)
-            - **信息泄露**、**缺失速率限制**
-
-            ## 每个漏洞的评论格式
-
-            ### [🔴严重/🟠高危/🟡中危/🟢低危] [CWE-编号] 漏洞标题
-
-            **文件：** `文件路径` 第 X 行
-
-            **漏洞代码：**
-            ```
-            有问题的代码
-            ```
-
-            **描述：** 详细说明漏洞形成原因和影响范围（3-5句话）
-
-            **攻击方式：** 包含示例 payload
-
-            **修复建议：**
-            ```typescript
-            // 修复后的代码
-            ```
-
-            > OWASP: 分类 | 置信度: HIGH/MEDIUM/LOW
-
-            ## 最终步骤
-
-            分析完所有文件后，必须执行以下操作：
-            1. 用 `gh pr comment $PR_NUMBER --body "..."` 发一条包含所有漏洞详情的总结评论
-            2. 所有输出使用中文
+            ## 规则
+            - 所有输出使用中文
+            - 只报告有把握的问题
+            - 每个发现必须包含修复代码
+            - **最后必须执行 gh pr comment 命令发布报告**
           claude_args: '--model global.anthropic.claude-opus-4-6-v1 --max-turns 20'
 
   # Job 2: Respond to @claude mentions in comments
