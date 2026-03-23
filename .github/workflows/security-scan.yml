@@ -37,7 +37,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-          aws-region: us-east-1
+          aws-region: us-west-2
 
       - name: Claude Code Security Review
         uses: anthropics/claude-code-action@v1
@@ -113,7 +113,7 @@ jobs:
             - 只报告有把握的问题，避免误报
             - 必须阅读实际代码后再报告，不要猜测
             - 每个发现必须包含具体的修复代码示例
-          claude_args: '--model us.anthropic.claude-opus-4-1-20250805-v1:0 --max-turns 20'
+          claude_args: '--model global.anthropic.claude-opus-4-6-v1 --max-turns 20'
 
   # Job 2: Respond to @claude mentions in comments
   claude-respond:
@@ -137,7 +137,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-          aws-region: us-east-1
+          aws-region: us-west-2
 
       - name: Claude Code Respond
         uses: anthropics/claude-code-action@v1
@@ -145,4 +145,4 @@ jobs:
           github_token: ${{ steps.app-token.outputs.token }}
           use_bedrock: "true"
           trigger_phrase: "@claude"
-          claude_args: '--model us.anthropic.claude-opus-4-1-20250805-v1:0 --max-turns 20'
+          claude_args: '--model global.anthropic.claude-opus-4-6-v1 --max-turns 20'
