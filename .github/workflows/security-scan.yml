@@ -30,7 +30,7 @@ permissions:
 jobs:
   security-scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -95,27 +95,56 @@ jobs:
             const path = require('path');
             const reportsDir = 'security-code-scan/reports';
 
-            // Find the latest JSON report
-            const jsonFiles = fs.readdirSync(reportsDir)
-              .filter(f => f.endsWith('.json'))
-              .sort()
-              .reverse();
+            // Safely find JSON report files
+            let jsonFiles = [];
+            try {
+              jsonFiles = fs.readdirSync(reportsDir)
+                .filter(f => f.endsWith('.json') && !f.startsWith('.'))
+                .sort()
+                .reverse();
+            } catch (e) {
+              console.log('Reports directory not found or empty');
+            }
 
             if (jsonFiles.length === 0) {
-              console.log('No scan reports found');
+              console.log('No scan reports found — skipping PR comment');
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: '## 🔒 安全扫描\n\n⚠️ 扫描未生成报告，请检查 Actions 日志。'
+              });
               return;
             }
 
-            const report = JSON.parse(fs.readFileSync(path.join(reportsDir, jsonFiles[0]), 'utf8'));
-            const s = report.summary || {};
+            // Parse report — handle non-JSON gracefully
+            let report;
+            const reportPath = path.join(reportsDir, jsonFiles[0]);
+            try {
+              report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+            } catch (e) {
+              console.log(`Failed to parse ${reportPath}: ${e.message}`);
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: '## 🔒 安全扫描\n\n⚠️ 报告解析失败，请检查 Artifacts 中的原始输出。'
+              });
+              return;
+            }
+
             const findings = report.findings || [];
-
             if (findings.length === 0) {
-              console.log('No findings to report');
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: '## 🔒 安全扫描结果\n\n✅ 未发现安全问题。'
+              });
               return;
             }
 
-            // Get the list of files changed in this PR (for inline comments)
+            // Get PR changed files and commit SHA
             const { data: prFiles } = await github.rest.pulls.listFiles({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -124,7 +153,6 @@ jobs:
             });
             const changedFiles = new Set(prFiles.map(f => f.filename));
 
-            // Get the latest commit SHA for the PR
             const { data: pr } = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -132,42 +160,30 @@ jobs:
             });
             const commitSha = pr.head.sha;
 
-            // Build review comments for findings that are in changed files
+            // Build inline review comments
             const comments = [];
             const nonDiffFindings = [];
-
             const severityEmoji = {
-              CRITICAL: '🔴 严重',
-              HIGH: '🟠 高危',
-              MEDIUM: '🟡 中危',
-              LOW: '🟢 低危'
+              CRITICAL: '🔴 严重', HIGH: '🟠 高危',
+              MEDIUM: '🟡 中危', LOW: '🟢 低危'
             };
 
             for (const f of findings) {
               const body = [
-                `**${severityEmoji[f.severity]} | ${f.cwe_id}**`,
-                '',
-                `**${f.title}**`,
-                '',
-                f.description,
-                '',
-                `**攻击方式：** ${f.attack_vector}`,
-                '',
-                `**修复建议：** ${f.remediation}`,
-                '',
+                `**${severityEmoji[f.severity] || f.severity} | ${f.cwe_id}**`,
+                '', `**${f.title}**`, '',
+                f.description, '',
+                `**攻击方式：** ${f.attack_vector}`, '',
+                `**修复建议：** ${f.remediation}`, '',
                 `> OWASP: ${f.owasp_category} | 置信度: ${f.confidence}`
               ].join('\n');
 
-              if (changedFiles.has(f.file)) {
-                const comment = {
-                  path: f.file,
-                  body: body
-                };
-                // Use line range if available
-                if (f.line_start && f.line_end && f.line_end > f.line_start) {
+              if (changedFiles.has(f.file) && f.line_start) {
+                const comment = { path: f.file, body };
+                if (f.line_end && f.line_end > f.line_start) {
                   comment.start_line = f.line_start;
                   comment.line = f.line_end;
-                } else if (f.line_start) {
+                } else {
                   comment.line = f.line_start;
                 }
                 comments.push(comment);
@@ -176,59 +192,57 @@ jobs:
               }
             }
 
-            // Build summary body
+            // Build summary
             const total = findings.length;
-            const critical = findings.filter(f => f.severity === 'CRITICAL').length;
-            const high = findings.filter(f => f.severity === 'HIGH').length;
-            const medium = findings.filter(f => f.severity === 'MEDIUM').length;
-            const low = findings.filter(f => f.severity === 'LOW').length;
+            const bySev = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
+            findings.forEach(f => { bySev[f.severity] = (bySev[f.severity] || 0) + 1; });
 
-            let summaryBody = `## 🔒 Claude Code 安全扫描结果\n\n`;
-            summaryBody += `| 严重程度 | 数量 |\n|----------|------|\n`;
-            summaryBody += `| 🔴 严重 | ${critical} |\n`;
-            summaryBody += `| 🟠 高危 | ${high} |\n`;
-            summaryBody += `| 🟡 中危 | ${medium} |\n`;
-            summaryBody += `| 🟢 低危 | ${low} |\n`;
-            summaryBody += `| **合计** | **${total}** |\n\n`;
+            let body = `## 🔒 Claude Code 安全扫描结果\n\n`;
+            body += `| 严重程度 | 数量 |\n|----------|------|\n`;
+            body += `| 🔴 严重 | ${bySev.CRITICAL} |\n`;
+            body += `| 🟠 高危 | ${bySev.HIGH} |\n`;
+            body += `| 🟡 中危 | ${bySev.MEDIUM} |\n`;
+            body += `| 🟢 低危 | ${bySev.LOW} |\n`;
+            body += `| **合计** | **${total}** |\n\n`;
 
             if (comments.length > 0) {
-              summaryBody += `📌 已在代码中标注 **${comments.length}** 个发现（见下方 inline comments）\n\n`;
+              body += `📌 已在代码中标注 **${comments.length}** 个发现\n\n`;
             }
 
-            // List findings not in the diff
             if (nonDiffFindings.length > 0) {
-              summaryBody += `### 以下发现不在本次 PR 变更范围内（已有代码中的问题）：\n\n`;
+              body += `<details><summary>📋 不在本次 diff 范围内的发现 (${nonDiffFindings.length})</summary>\n\n`;
               for (const f of nonDiffFindings) {
-                const emoji = severityEmoji[f.severity];
-                summaryBody += `- **${emoji}** \`${f.file}:${f.line_start}\` — ${f.title}\n`;
+                body += `- **${severityEmoji[f.severity] || f.severity}** \`${f.file}:${f.line_start}\` — ${f.title}\n`;
               }
-              summaryBody += '\n';
+              body += `\n</details>\n\n`;
             }
 
-            summaryBody += `---\n_由 Claude Code 安全审计自动扫描_`;
+            body += `---\n_由 Claude Code 安全审计自动扫描_`;
 
-            // Determine review event based on severity
-            const event = critical > 0 ? 'REQUEST_CHANGES' : (high > 0 ? 'COMMENT' : 'COMMENT');
+            const event = bySev.CRITICAL > 0 ? 'REQUEST_CHANGES' : 'COMMENT';
 
-            // Submit as a PR review with inline comments
-            try {
-              await github.rest.pulls.createReview({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: context.issue.number,
-                commit_id: commitSha,
-                body: summaryBody,
-                event: event,
-                comments: comments.slice(0, 50)  // GitHub API limit
-              });
-              console.log(`Review submitted: ${comments.length} inline comments, event=${event}`);
-            } catch (err) {
-              console.log(`Review API error: ${err.message}`);
-              // Fallback: post as regular comment
-              await github.rest.issues.createComment({
-                issue_number: context.issue.number,
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                body: summaryBody
-              });
+            // Submit review
+            if (comments.length > 0) {
+              try {
+                await github.rest.pulls.createReview({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: context.issue.number,
+                  commit_id: commitSha,
+                  body, event,
+                  comments: comments.slice(0, 50)
+                });
+                console.log(`Review submitted: ${comments.length} inline comments`);
+                return;
+              } catch (err) {
+                console.log(`Inline review failed: ${err.message}, falling back to comment`);
+              }
             }
+
+            // Fallback: regular comment
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });
