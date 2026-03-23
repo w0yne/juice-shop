@@ -1,380 +1,109 @@
-name: Security Scan (Claude Code)
+name: Claude Code Security Review
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
 
 on:
   pull_request:
-    branches: [main, master, develop]
-  workflow_dispatch:
-    inputs:
-      scan_mode:
-        description: 'Scan mode'
-        required: true
-        default: 'full'
-        type: choice
-        options:
-          - full
-          - diff
-
-permissions:
-  contents: read
-  pull-requests: write
+    types: [opened, synchronize]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
 
 jobs:
-  # Job 1: Full codebase scan → detailed summary comment
-  full-scan:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Install Claude Code
-        run: npm install -g @anthropic-ai/claude-code
-
-      - name: Run full security scan
-        env:
-          CLAUDE_CODE_USE_BEDROCK: "1"
-          AWS_REGION: us-east-1
-          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
-          CLAUDE_MODEL: global.anthropic.claude-opus-4-6-v1
-        run: |
-          chmod +x security-code-scan/scan.sh
-          ./security-code-scan/scan.sh
-
-      - name: Upload full scan report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: full-scan-report
-          path: security-code-scan/reports/
-          retention-days: 30
-
-      - name: Post detailed summary comment
-        if: github.event_name == 'pull_request' && always()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-            const reportsDir = 'security-code-scan/reports';
-
-            let jsonFiles = [];
-            try {
-              jsonFiles = fs.readdirSync(reportsDir)
-                .filter(f => f.endsWith('.json') && !f.startsWith('.'))
-                .sort().reverse();
-            } catch (e) {
-              console.log('No reports dir');
-            }
-
-            if (jsonFiles.length === 0) {
-              await github.rest.issues.createComment({
-                issue_number: context.issue.number,
-                owner: context.repo.owner, repo: context.repo.repo,
-                body: '## 🔒 安全扫描\n\n⚠️ 完整扫描未生成报告，请检查 Actions 日志。'
-              });
-              return;
-            }
-
-            let report;
-            try {
-              report = JSON.parse(fs.readFileSync(path.join(reportsDir, jsonFiles[0]), 'utf8'));
-            } catch (e) {
-              await github.rest.issues.createComment({
-                issue_number: context.issue.number,
-                owner: context.repo.owner, repo: context.repo.repo,
-                body: '## 🔒 安全扫描\n\n⚠️ 报告解析失败，请检查 Artifacts。'
-              });
-              return;
-            }
-
-            const findings = report.findings || [];
-            if (findings.length === 0) {
-              await github.rest.issues.createComment({
-                issue_number: context.issue.number,
-                owner: context.repo.owner, repo: context.repo.repo,
-                body: '## 🔒 安全扫描结果\n\n✅ 完整扫描未发现安全问题。'
-              });
-              return;
-            }
-
-            const bySev = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
-            findings.forEach(f => { bySev[f.severity] = (bySev[f.severity] || 0) + 1; });
-            const sevLabel = { CRITICAL: '🔴 严重', HIGH: '🟠 高危', MEDIUM: '🟡 中危', LOW: '🟢 低危' };
-
-            let body = `## 🔒 Claude Code 安全审计 — 完整扫描报告\n\n`;
-            body += `**扫描范围：** 全部服务端代码（routes/、lib/、models/、server.ts）\n`;
-            body += `**分析文件数：** ${report.scan_metadata?.files_analyzed || 'N/A'}\n\n`;
-            body += `### 📊 总览\n\n`;
-            body += `| 严重程度 | 数量 |\n|----------|------|\n`;
-            for (const s of ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']) {
-              body += `| ${sevLabel[s]} | ${bySev[s]} |\n`;
-            }
-            body += `| **合计** | **${findings.length}** |\n\n`;
-            body += `---\n\n`;
-
-            // Group by severity
-            for (const sev of ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']) {
-              const group = findings.filter(f => f.severity === sev);
-              if (group.length === 0) continue;
-
-              body += `### ${sevLabel[sev]} (${group.length})\n\n`;
-
-              for (const f of group) {
-                body += `#### ${f.id}: ${f.title}\n\n`;
-                body += `- **文件：** \`${f.file}\` (第 ${f.line_start}-${f.line_end} 行)\n`;
-                body += `- **分类：** ${f.category} | **CWE:** ${f.cwe_id} | **OWASP:** ${f.owasp_category}\n`;
-                body += `- **置信度：** ${f.confidence}\n\n`;
-                body += `**漏洞代码：**\n\`\`\`\n${f.code_snippet}\n\`\`\`\n\n`;
-                body += `**描述：** ${f.description}\n\n`;
-                body += `**攻击方式：** ${f.attack_vector}\n\n`;
-                body += `**修复建议：** ${f.remediation}\n\n`;
-                body += `---\n\n`;
-              }
-            }
-
-            body += `\n_由 Claude Code 安全审计自动生成_`;
-
-            // GitHub comment has 65536 char limit
-            if (body.length > 65000) {
-              body = body.substring(0, 64900) + '\n\n> ⚠️ 报告过长，已截断。完整报告请查看 Artifacts。';
-            }
-
-            await github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body
-            });
-
-  # Job 2: Diff scan → inline review comments on changed code
-  diff-scan:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+  # Job 1: Auto security review on every PR
+  security-review:
     if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
         with:
-          node-version: '22'
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
-      - name: Install Claude Code
-        run: npm install -g @anthropic-ai/claude-code
-
-      - name: Run diff security scan
-        env:
-          CLAUDE_CODE_USE_BEDROCK: "1"
-          AWS_REGION: us-east-1
-          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
-          CLAUDE_MODEL: global.anthropic.claude-opus-4-6-v1
-        run: |
-          chmod +x security-code-scan/scan.sh
-          ./security-code-scan/scan.sh --diff ${{ github.event.pull_request.base.ref }} || true
-
-      - name: Upload diff scan report
-        if: always()
-        uses: actions/upload-artifact@v4
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          name: diff-scan-report
-          path: security-code-scan/reports/
-          retention-days: 30
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: us-east-1
 
-      - name: Post inline review comments
-        if: always()
-        uses: actions/github-script@v7
+      - name: Claude Code Security Review
+        uses: anthropics/claude-code-action@v1
         with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-            const reportsDir = 'security-code-scan/reports';
+          github_token: ${{ steps.app-token.outputs.token }}
+          use_bedrock: "true"
+          prompt: |
+            你是一名资深应用安全工程师，正在对这个 Pull Request 进行安全审计。
 
-            let jsonFiles = [];
-            try {
-              jsonFiles = fs.readdirSync(reportsDir)
-                .filter(f => f.endsWith('.json') && !f.startsWith('.'))
-                .sort().reverse();
-            } catch (e) { return; }
+            请执行以下操作：
 
-            if (jsonFiles.length === 0) return;
+            1. **分析 PR 的所有代码变更**，重点关注安全漏洞
+            2. **对每个发现的漏洞，直接在对应代码行上添加 review comment**，内容包括：
+               - 严重程度（🔴严重 / 🟠高危 / 🟡中危 / 🟢低危）
+               - CWE 编号
+               - 漏洞描述（详细说明形成原因和影响）
+               - 攻击方式（包含具体的 payload 示例）
+               - 修复建议（包含修复后的代码示例）
+            3. **最后发一条总结评论**，包含：
+               - 按严重程度分类的漏洞统计表格
+               - 整体安全评估
+               - 优先修复建议
 
-            let report;
-            try {
-              report = JSON.parse(fs.readFileSync(path.join(reportsDir, jsonFiles[0]), 'utf8'));
-            } catch (e) { return; }
+            检查的漏洞类型包括但不限于：
+            - SQL 注入、NoSQL 注入
+            - 远程代码执行（eval、new Function、child_process）
+            - 跨站脚本 XSS（反射型、存储型、DOM 型）
+            - 路径遍历
+            - 服务端请求伪造 SSRF
+            - 不安全的直接对象引用 IDOR
+            - 认证/授权绕过
+            - 敏感数据泄露（硬编码密钥、密码明文日志）
+            - 不安全的 XML 解析 XXE
+            - 弱加密算法
 
-            const findings = report.findings || [];
-            if (findings.length === 0) return;
+            所有输出使用中文。
+          claude_args: '--model us.anthropic.claude-opus-4-6 --max-turns 20'
 
-            // Get PR files with their diff patches to know valid line ranges
-            const { data: prFiles } = await github.rest.pulls.listFiles({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.issue.number,
-              per_page: 300
-            });
+  # Job 2: Respond to @claude mentions in comments
+  claude-respond:
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-            // Build a map of file -> set of valid diff line numbers
-            const fileDiffLines = {};
-            const changedFiles = new Set();
-            for (const pf of prFiles) {
-              changedFiles.add(pf.filename);
-              if (!pf.patch) continue;
-              const lines = new Set();
-              let lineNum = 0;
-              for (const line of pf.patch.split('\n')) {
-                const hunkMatch = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-                if (hunkMatch) {
-                  lineNum = parseInt(hunkMatch[1]) - 1;
-                  continue;
-                }
-                if (line.startsWith('-')) continue; // deleted line, no number in new file
-                lineNum++;
-                lines.add(lineNum);
-              }
-              fileDiffLines[pf.filename] = lines;
-            }
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
-            const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.issue.number
-            });
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: us-east-1
 
-            const sevLabel = { CRITICAL: '🔴 严重', HIGH: '🟠 高危', MEDIUM: '🟡 中危', LOW: '🟢 低危' };
-            const comments = [];
-            const fileOnlyComments = [];
-
-            for (const f of findings) {
-              if (!changedFiles.has(f.file)) continue;
-
-              const body = [
-                `### ${sevLabel[f.severity] || f.severity} | ${f.cwe_id}`,
-                '',
-                `**${f.title}**`,
-                '',
-                `**漏洞代码：**`,
-                '```',
-                f.code_snippet,
-                '```',
-                '',
-                `**描述：** ${f.description}`,
-                '',
-                `**攻击方式：** ${f.attack_vector}`,
-                '',
-                `**修复建议：** ${f.remediation}`,
-                '',
-                `> 分类: ${f.category} | OWASP: ${f.owasp_category} | 置信度: ${f.confidence}`
-              ].join('\n');
-
-              const validLines = fileDiffLines[f.file];
-
-              // Check if the finding's line is in the diff
-              if (validLines && f.line_start) {
-                // Try to find a valid line in the range
-                let targetLine = null;
-                for (let l = f.line_start; l <= (f.line_end || f.line_start); l++) {
-                  if (validLines.has(l)) {
-                    targetLine = l;
-                    break;
-                  }
-                }
-
-                if (targetLine) {
-                  const comment = { path: f.file, body, line: targetLine, side: 'RIGHT' };
-                  // Add start_line for range if both ends are in diff
-                  if (f.line_start !== targetLine && validLines.has(f.line_start)) {
-                    comment.start_line = f.line_start;
-                    comment.start_side = 'RIGHT';
-                  }
-                  comments.push(comment);
-                  continue;
-                }
-              }
-
-              // Fallback: file-level comment (no line number needed)
-              fileOnlyComments.push({
-                path: f.file,
-                body: `📍 第 ${f.line_start}-${f.line_end} 行\n\n${body}`,
-                subject_type: 'file'
-              });
-            }
-
-            const allComments = [...comments, ...fileOnlyComments];
-            if (allComments.length === 0) return;
-
-            const bySev = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
-            findings.forEach(f => { bySev[f.severity] = (bySev[f.severity] || 0) + 1; });
-
-            let summaryBody = `## 🔍 Claude Code Diff 扫描 — 变更代码安全审查\n\n`;
-            summaryBody += `| 严重程度 | 数量 |\n|----------|------|\n`;
-            for (const s of ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']) {
-              if (bySev[s] > 0) summaryBody += `| ${sevLabel[s]} | ${bySev[s]} |\n`;
-            }
-            summaryBody += `| **合计** | **${findings.length}** |\n\n`;
-            summaryBody += `📌 共 ${comments.length} 个发现已标注在代码行上`;
-            if (fileOnlyComments.length > 0) {
-              summaryBody += `，${fileOnlyComments.length} 个标注在文件级别`;
-            }
-            summaryBody += `\n\n---\n_由 Claude Code 安全审计自动生成_`;
-
-            const event = bySev.CRITICAL > 0 ? 'REQUEST_CHANGES' : 'COMMENT';
-
-            // Try submitting review with all comments
-            try {
-              await github.rest.pulls.createReview({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: context.issue.number,
-                commit_id: pr.head.sha,
-                body: summaryBody,
-                event,
-                comments: allComments.slice(0, 50)
-              });
-              console.log(`Review OK: ${comments.length} inline + ${fileOnlyComments.length} file-level`);
-              return;
-            } catch (err) {
-              console.log(`Batch review failed: ${err.message}`);
-            }
-
-            // Fallback: try file-level only
-            try {
-              const fileLevelAll = findings
-                .filter(f => changedFiles.has(f.file))
-                .map(f => ({
-                  path: f.file,
-                  body: `📍 第 ${f.line_start}-${f.line_end} 行\n\n### ${sevLabel[f.severity] || f.severity} | ${f.cwe_id}\n\n**${f.title}**\n\n${f.description}\n\n**修复建议：** ${f.remediation}`,
-                  subject_type: 'file'
-                }));
-
-              await github.rest.pulls.createReview({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: context.issue.number,
-                commit_id: pr.head.sha,
-                body: summaryBody,
-                event: 'COMMENT',
-                comments: fileLevelAll.slice(0, 50)
-              });
-              console.log(`File-level review OK: ${fileLevelAll.length} comments`);
-              return;
-            } catch (err2) {
-              console.log(`File-level review failed: ${err2.message}`);
-            }
-
-            // Final fallback: regular comment
-            await github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner, repo: context.repo.repo,
-              body: summaryBody
-            });
+      - name: Claude Code Respond
+        uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ steps.app-token.outputs.token }}
+          use_bedrock: "true"
+          trigger_phrase: "@claude"
+          claude_args: '--model us.anthropic.claude-opus-4-6 --max-turns 20'
