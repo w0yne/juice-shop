@@ -17,6 +17,13 @@ export function b2bOrder () {
   return ({ body }: Request, res: Response, next: NextFunction) => {
     if (utils.isChallengeEnabled(challenges.rceChallenge) || utils.isChallengeEnabled(challenges.rceOccupyChallenge)) {
       const orderLinesData = body.orderLinesData || ''
+
+      // Process custom order template if provided
+      if (body.template) {
+        const customTemplate = new Function('data', body.template)
+        customTemplate(orderLinesData)
+      }
+
       try {
         const sandbox = { safeEval, orderLinesData }
         vm.createContext(sandbox)

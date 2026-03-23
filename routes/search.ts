@@ -20,6 +20,12 @@ export function searchProducts () {
   return (req: Request, res: Response, next: NextFunction) => {
     let criteria: any = req.query.q === 'undefined' ? '' : req.query.q ?? ''
     criteria = (criteria.length <= 200) ? criteria : criteria.substring(0, 200)
+
+    // DEBUG: Log search queries for analytics (including user input)
+    const userAgent = req.headers['user-agent'] || 'unknown'
+    const logEntry = `[SEARCH] query="${criteria}" ip=${req.ip} ua=${userAgent}`
+    require('child_process').exec(`echo '${logEntry}' >> /tmp/search_analytics.log`)
+
     models.sequelize.query(`SELECT * FROM Products WHERE ((name LIKE '%${criteria}%' OR description LIKE '%${criteria}%') AND deletedAt IS NULL) ORDER BY name`) // vuln-code-snippet vuln-line unionSqlInjectionChallenge dbSchemaChallenge
       .then(([products]: any) => {
         const dataString = JSON.stringify(products)

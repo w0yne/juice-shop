@@ -77,9 +77,9 @@
       "line_start": "<行号>",
       "line_end": "<行号>",
       "code_snippet": "<漏洞代码，最多5行>",
-      "description": "<中文描述：漏洞是什么以及为什么危险>",
-      "attack_vector": "<中文描述：攻击者如何利用此漏洞>",
-      "remediation": "<中文描述：具体的修复建议>",
+      "description": "<详细中文描述：漏洞是什么、形成原因、影响范围、危险程度。至少3-5句话详细分析。>",
+      "attack_vector": "<详细中文描述：攻击者具体如何利用此漏洞，包含示例 payload 或请求。>",
+      "remediation": "<详细中文修复建议：具体的代码修改方案，包含修复后的代码示例。>",
       "cwe_id": "CWE-<编号>",
       "owasp_category": "<OWASP Top 10 分类>",
       "confidence": "HIGH|MEDIUM|LOW"
