@@ -48,61 +48,32 @@ jobs:
           prompt: |
             你是一名资深应用安全工程师。你的任务是审计这个 PR 的代码变更并将结果发布到 PR 上。
 
-            ## 重要：你必须使用 gh CLI 发布评论
-
-            你的分析结果必须通过执行 `gh pr comment` 命令发布到 PR 上。
-            仅仅输出文本是不够的——没有人会看到你的文本输出。
-            你必须运行 bash 命令来发布评论。
-
             ## 步骤
 
             ### 第一步：获取代码变更
-            ```bash
-            git diff origin/master...HEAD -- routes/ lib/ models/ server.ts
-            ```
+            运行 `git diff origin/master...HEAD -- routes/ lib/ models/ server.ts` 查看变更的代码。
 
-            ### 第二步：分析每个变更文件的安全漏洞
+            ### 第二步：分析漏洞
+            检查以下类型：SQL 注入、远程代码执行（eval/new Function/child_process.exec）、XSS、命令注入、敏感数据泄露（密码明文日志）、NoSQL 注入、路径遍历、SSRF、IDOR。
 
-            检查以下类型的漏洞：
-            - SQL 注入、NoSQL 注入
-            - 远程代码执行（eval、new Function、child_process.exec）
-            - 跨站脚本 XSS
-            - 命令注入
-            - 敏感数据泄露（密码明文日志）
-            - 路径遍历、SSRF、IDOR
+            ### 第三步：使用 create_inline_comments 工具发布 inline review
+            对每个漏洞，使用 `create_inline_comments` 工具在代码对应行上发布 review comment。先用 `get_pr_diff` 获取 diff 来确定正确的行号。
 
-            ### 第三步：使用 gh CLI 发布评论（必须执行！）
+            ### 第四步：使用 create_comment 工具发布总结
+            发一条总结评论，包含漏洞统计表格和整体安全评估。
 
-            将你的分析结果写入文件，然后用 gh 发布：
-
-            ```bash
-            cat > /tmp/security-review.md << 'REVIEW_EOF'
-            ## 🔒 Claude Code 安全审计报告
-
-            （这里写你的完整分析报告，包含每个漏洞的详细描述、攻击方式、修复建议）
-
-            REVIEW_EOF
-
-            gh pr comment $PR_NUMBER --body-file /tmp/security-review.md
-            ```
-
-            **你必须执行 `gh pr comment` 命令！这是最关键的一步。如果你不执行这个命令，你的分析将不会被任何人看到。**
-
-            ### 漏洞报告格式（每个漏洞）
-
-            #### 🔴 严重 | CWE-XXX | 漏洞标题
-            - **文件：** `路径` 第 X 行
-            - **漏洞代码：** （代码片段）
-            - **描述：** （3-5句详细分析）
-            - **攻击方式：** （示例 payload）
-            - **修复建议：** （修复后的代码）
+            ## 每个漏洞的评论格式
+            ### 🔴严重/🟠高危/🟡中危/🟢低危 | CWE-XXX | 标题
+            - **描述：** 3-5句详细分析
+            - **攻击方式：** 示例 payload
+            - **修复建议：** 修复后的代码
 
             ## 规则
             - 所有输出使用中文
             - 只报告有把握的问题
             - 每个发现必须包含修复代码
-            - **最后必须执行 gh pr comment 命令发布报告**
-          claude_args: '--model global.anthropic.claude-opus-4-6-v1 --max-turns 20'
+            - **必须使用工具发布评论，不要只输出文本**
+          claude_args: '--model global.anthropic.claude-opus-4-6-v1 --max-turns 20 --allowedTools "mcp__github_comment__create_comment,mcp__github_comment__update_comment,mcp__github_inline_comment__create_inline_comments,mcp__github_inline_comment__get_pr_diff"'
 
   # Job 2: Respond to @claude mentions in comments
   claude-respond:
